@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -17,7 +16,7 @@ router = APIRouter()
 
 
 @router.get("/analyze")
-def analyze(ticker: str = Query(..., description="Ticker a analizar, ej. MSFT")) -> Dict[str, Any]:
+def analyze(ticker: str = Query(..., description="Ticker a analizar, ej. MSFT")):
     """Análisis completo de una empresa.
 
     Devuelve:
@@ -28,27 +27,60 @@ def analyze(ticker: str = Query(..., description="Ticker a analizar, ej. MSFT"))
     - scoring: score 0-100 + recomendación BUY/HOLD/SELL
     """
     ticker = ticker.upper().strip()
-
     logger.info(f"Análisis solicitado para {ticker}")
 
     # 1. Análisis de calidad
-    analyzer_data = analyze_company(ticker)
-    if "error" in analyzer_data:
-        raise HTTPException(status_code=404, detail=f"Error analizando {ticker}: {analyzer_data['error']}")
+    try:
+        analyzer_data = analyze_company(ticker)
+        if "error" in analyzer_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Error analizando {ticker}: {analyzer_data['error']}",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error inesperado en analyzer para {ticker}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudieron obtener datos de {ticker} desde Yahoo Finance. "
+                   f"Esto puede ser rate limiting o un problema temporal. Intenta en unos minutos. "
+                   f"Detalle técnico: {str(e)[:200]}",
+        )
 
     # 2. DCF
-    dcf_data = run_dcf(ticker)
-    if "error" in dcf_data:
-        # Si DCF falla (FCF negativo, etc.), continuar sin él
-        logger.warning(f"DCF no disponible para {ticker}: {dcf_data.get('error')}")
+    try:
+        dcf_data = run_dcf(ticker)
+        if "error" in dcf_data:
+            logger.warning(f"DCF no disponible para {ticker}: {dcf_data.get('error')}")
+            dcf_data = {
+                "ticker": ticker,
+                "error": dcf_data.get("error", "DCF no disponible"),
+                "scenarios": {},
+            }
+    except Exception as e:
+        logger.exception(f"Error en DCF para {ticker}")
         dcf_data = {
             "ticker": ticker,
-            "error": dcf_data.get("error", "DCF no disponible"),
+            "error": f"DCF no pudo calcularse: {str(e)[:200]}",
             "scenarios": {},
         }
 
     # 3. Scoring
-    scoring = calculate_score(analyzer_data, dcf_data)
+    try:
+        scoring = calculate_score(analyzer_data, dcf_data)
+    except Exception as e:
+        logger.exception(f"Error en scoring para {ticker}")
+        scoring = {
+            "total_score": 0,
+            "max_score": 100,
+            "recommendation": {
+                "action": "HOLD",
+                "label": "Datos insuficientes",
+                "color": "yellow",
+                "description": "No se pudo calcular el scoring. Verifica la conexión.",
+            },
+        }
 
     return {
         "ticker": ticker,
@@ -61,13 +93,27 @@ def analyze(ticker: str = Query(..., description="Ticker a analizar, ej. MSFT"))
 
 
 @router.get("/quick")
-def quick_analysis(ticker: str = Query(..., description="Ticker, ej. MSFT")) -> Dict[str, Any]:
-    """Análisis rápido — solo métricas clave, sin DCF. Más rápido."""
+def quick_analysis(ticker: str = Query(..., description="Ticker, ej. MSFT")):
+    """Análisis rápido — solo métricas clave, sin DCF."""
     ticker = ticker.upper().strip()
 
-    analyzer_data = analyze_company(ticker)
-    if "error" in analyzer_data:
-        raise HTTPException(status_code=404, detail=f"Error: {analyzer_data['error']}")
+    try:
+        analyzer_data = analyze_company(ticker)
+        if "error" in analyzer_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Error: {analyzer_data['error']}",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error inesperado en quick para {ticker}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudieron obtener datos de {ticker} desde Yahoo Finance. "
+                   f"Posible rate limiting. Intenta en unos minutos. "
+                   f"Detalle: {str(e)[:200]}",
+        )
 
     fq = analyzer_data["financial_quality"]
     val = analyzer_data["valuation"]
@@ -89,4 +135,3 @@ def quick_analysis(ticker: str = Query(..., description="Ticker, ej. MSFT")) -> 
         "target_price": val.get("target_mean_price"),
         "analyst_recommendation": val.get("analyst_recommendation"),
     }
-
