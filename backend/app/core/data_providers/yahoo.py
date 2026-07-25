@@ -1,12 +1,13 @@
 """Wrapper de yfinance con manejo robusto de errores y bypass de rate limiting.
 
 Proporciona una interfaz limpia para obtener datos financieros
-de Yahoo Finance usando curl_cffi para evitar el rate limit 429.
+de Yahoo Finance usando un User-Agent realista para evitar 429.
 Maneja TODOS los errores devolviendo dicts con 'error' en lugar de explotar.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -53,11 +54,10 @@ def _safe_yfinance_call(callable_fn, ticker: str) -> Dict[str, Any]:
         err_msg = str(e)[:300]
         logger.error(f"Error en yfinance para {ticker}: {type(e).__name__}: {err_msg}")
 
-        # Mensaje amigable para 429
         if "429" in err_msg or "Too Many Requests" in err_msg:
             return {
                 "ticker": ticker.upper(),
-                "error": "Yahoo Finance rate limit (429). Espera 10-15 minutos.",
+                "error": "Yahoo Finance rate limit (429). Espera 10-30 minutos.",
             }
         if "Expecting value" in err_msg or "JSONDecodeError" in err_msg:
             return {
@@ -68,20 +68,25 @@ def _safe_yfinance_call(callable_fn, ticker: str) -> Dict[str, Any]:
 
 
 def _make_session():
-    """Crea sesión con curl_cffi para imitar un navegador real.
-
-    Esto evita el 429 de Yahoo Finance que bloquea al User-Agent por defecto.
-    """
+    """Crea sesión con User-Agent realista para evitar 429."""
     try:
-        from curl_cffi import requests as curl_requests
+        import requests
 
-        session = curl_requests.Session(impersonate="chrome120")
+        session = requests.Session()
+        session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        )
         return session
     except ImportError:
-        logger.warning(
-            "curl_cffi no instalado. Si ves 429, instala con: "
-            "pip install curl_cffi"
-        )
         return None
 
 
