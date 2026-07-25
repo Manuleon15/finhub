@@ -25,8 +25,39 @@ class Base(DeclarativeBase):
 
 def init_db() -> None:
     """Crea todas las tablas. Llamar al arrancar."""
-    # Importar todos los modelos para que SQLAlchemy los registre
-    from app.modules.portfolio.models import Position, Transaction, Account  # noqa: F401
+    # Importar todos los modelos para que SQLAlchemy los registre.
+    # Fase 1: solo research existe. Los demás módulos se importan en su try/except
+    # para que esta función no rompa cuando aún no estén implementados.
+
+    # Módulo portfolio (Fase 2)
+    try:
+        from app.modules.portfolio.models import Position, Transaction, Account  # noqa: F401
+    except ImportError:
+        pass
+
+    # Módulo screener (Fase 3)
+    try:
+        from app.modules.screener.models import ScreenerResult  # noqa: F401
+    except ImportError:
+        pass
+
+    # Módulo alerts (Fase 4)
+    try:
+        from app.modules.alerts.models import Alert  # noqa: F401
+    except ImportError:
+        pass
+
+    # Módulo earnings (Fase 5)
+    try:
+        from app.modules.earnings.models import EarningsAnalysis  # noqa: F401
+    except ImportError:
+        pass
+
+    # Módulo copilot (Fase 6)
+    try:
+        from app.modules.copilot.models import ChatMessage  # noqa: F401
+    except ImportError:
+        pass
 
     Base.metadata.create_all(bind=engine)
 
@@ -38,4 +69,4 @@ def get_db():
         yield db
     finally:
         db.close()
-
+        
