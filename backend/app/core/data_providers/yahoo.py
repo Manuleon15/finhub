@@ -1,13 +1,12 @@
-"""Wrapper de yfinance con manejo robusto de errores.
+"""Wrapper de yfinance con manejo robusto de errores y bypass de rate limiting.
 
 Proporciona una interfaz limpia para obtener datos financieros
-de Yahoo Finance. Todos los calls se cachean para evitar rate limiting.
-Maneja fallos de yfinance devolviendo dicts con 'error' en lugar de explotar.
+de Yahoo Finance usando curl_cffi para evitar el rate limit 429.
+Maneja TODOS los errores devolviendo dicts con 'error' en lugar de explotar.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -43,23 +42,47 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-def _safe_yfinance_call(callable_fn, ticker: str, default: Dict[str, Any]) -> Dict[str, Any]:
-    """Ejecuta una llamada a yfinance capturando TODOS los errores.
-
-    Devuelve un dict con 'error' si algo falla, o el resultado si funciona.
-    """
+def _safe_yfinance_call(callable_fn, ticker: str) -> Dict[str, Any]:
+    """Ejecuta una llamada a yfinance capturando TODOS los errores."""
     try:
         result = callable_fn()
         if result is None or (isinstance(result, dict) and not result):
             return {"ticker": ticker.upper(), "error": "Yahoo devolvió respuesta vacía"}
         return result
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error para {ticker}: {e}")
-        return {"ticker": ticker.upper(), "error": "Yahoo devolvió JSON inválido (rate limit?)"}
     except Exception as e:
-        err_msg = str(e)[:200]
+        err_msg = str(e)[:300]
         logger.error(f"Error en yfinance para {ticker}: {type(e).__name__}: {err_msg}")
+
+        # Mensaje amigable para 429
+        if "429" in err_msg or "Too Many Requests" in err_msg:
+            return {
+                "ticker": ticker.upper(),
+                "error": "Yahoo Finance rate limit (429). Espera 10-15 minutos.",
+            }
+        if "Expecting value" in err_msg or "JSONDecodeError" in err_msg:
+            return {
+                "ticker": ticker.upper(),
+                "error": "Yahoo devolvió respuesta inválida. Rate limit temporal.",
+            }
         return {"ticker": ticker.upper(), "error": f"{type(e).__name__}: {err_msg}"}
+
+
+def _make_session():
+    """Crea sesión con curl_cffi para imitar un navegador real.
+
+    Esto evita el 429 de Yahoo Finance que bloquea al User-Agent por defecto.
+    """
+    try:
+        from curl_cffi import requests as curl_requests
+
+        session = curl_requests.Session(impersonate="chrome120")
+        return session
+    except ImportError:
+        logger.warning(
+            "curl_cffi no instalado. Si ves 429, instala con: "
+            "pip install curl_cffi"
+        )
+        return None
 
 
 def get_ticker_info(ticker: str) -> Dict[str, Any]:
@@ -70,11 +93,11 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
         return cached
 
     def fetch():
-        t = yf.Ticker(ticker)
-        # Forzar descarga que puede fallar silenciosamente
+        session = _make_session()
+        t = yf.Ticker(ticker, session=session) if session else yf.Ticker(ticker)
         info = t.info
         if not info or len(info) < 5:
-            raise ValueError("Yahoo devolvió info vacía o demasiado pequeña")
+            raise ValueError("Yahoo devolvió info vacía")
 
         return {
             "ticker": ticker.upper(),
@@ -118,7 +141,7 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
             "recommendation": info.get("recommendationKey"),
         }
 
-    result = _safe_yfinance_call(fetch, ticker, {})
+    result = _safe_yfinance_call(fetch, ticker)
     if "error" not in result:
         _set_cached(cache_key, result)
     return result
@@ -132,7 +155,8 @@ def get_financials(ticker: str) -> Dict[str, Any]:
         return cached
 
     def fetch():
-        t = yf.Ticker(ticker)
+        session = _make_session()
+        t = yf.Ticker(ticker, session=session) if session else yf.Ticker(ticker)
         income = t.financials
         balance = t.balance_sheet
         cashflow = t.cashflow
@@ -149,7 +173,7 @@ def get_financials(ticker: str) -> Dict[str, Any]:
                     try:
                         if hasattr(val, "item"):
                             val = val.item()
-                        elif isinstance(val, float) and val != val:  # NaN
+                        elif isinstance(val, float) and val != val:
                             val = None
                     except Exception:
                         val = None
@@ -163,7 +187,7 @@ def get_financials(ticker: str) -> Dict[str, Any]:
             "cash_flow": df_to_dict(cashflow),
         }
 
-    result = _safe_yfinance_call(fetch, ticker, {})
+    result = _safe_yfinance_call(fetch, ticker)
     if "error" not in result and result.get("income_statement"):
         _set_cached(cache_key, result)
     return result
@@ -177,7 +201,8 @@ def get_price_history(ticker: str, period: str = "1y") -> Dict[str, Any]:
         return cached
 
     def fetch():
-        t = yf.Ticker(ticker)
+        session = _make_session()
+        t = yf.Ticker(ticker, session=session) if session else yf.Ticker(ticker)
         hist = t.history(period=period)
         if hist.empty:
             return {"ticker": ticker.upper(), "dates": [], "prices": []}
@@ -192,7 +217,7 @@ def get_price_history(ticker: str, period: str = "1y") -> Dict[str, Any]:
             "volume": [int(v) for v in hist["Volume"]],
         }
 
-    result = _safe_yfinance_call(fetch, ticker, {})
+    result = _safe_yfinance_call(fetch, ticker)
     if "error" not in result and result.get("dates"):
         _set_cached(cache_key, result)
     return result
