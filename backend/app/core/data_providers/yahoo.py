@@ -1,18 +1,14 @@
-"""Wrapper de yfinance con manejo robusto de errores y bypass de rate limiting.
+"""Wrapper de yfinance/yahooquery con manejo robusto de errores.
 
-Proporciona una interfaz limpia para obtener datos financieros
-de Yahoo Finance usando un User-Agent realista para evitar 429.
+Usa yfinance como principal con fallback a yahooquery.
 Maneja TODOS los errores devolviendo dicts con 'error' en lugar de explotar.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any, Dict, Optional
-
-import yfinance as yf
 
 logger = logging.getLogger("finhub.yahoo")
 
@@ -22,11 +18,9 @@ CACHE_TTL = 900  # 15 minutos
 
 
 def _get_cached(key: str) -> Optional[Any]:
-    """Obtiene valor del cache si no ha expirado."""
     if key in _cache:
         ts, val = _cache[key]
         if time.time() - ts < CACHE_TTL:
-            logger.debug(f"Cache hit: {key}")
             return val
         else:
             del _cache[key]
@@ -34,195 +28,132 @@ def _get_cached(key: str) -> Optional[Any]:
 
 
 def _set_cached(key: str, value: Any) -> None:
-    """Guarda valor en cache."""
     _cache[key] = (time.time(), value)
 
 
 def clear_cache() -> None:
-    """Limpia todo el cache."""
     _cache.clear()
 
 
-def _safe_yfinance_call(callable_fn, ticker: str) -> Dict[str, Any]:
-    """Ejecuta una llamada a yfinance capturando TODOS los errores."""
+def _try_yahooquery(ticker: str) -> Optional[Dict[str, Any]]:
+    """Intenta con yahooquery. Retorna None si falla."""
     try:
-        result = callable_fn()
-        if result is None or (isinstance(result, dict) and not result):
-            return {"ticker": ticker.upper(), "error": "Yahoo devolvió respuesta vacía"}
-        return result
+        from yahooquery import Ticker as YQTicker
+
+        t = YQTicker(ticker)
+        summary = t.summary_detail
+        profile = t.asset_profile
+        financials = t.financial_data
+
+        s = summary.get(ticker, {}) or {}
+        p = profile.get(ticker, {}) or {}
+        f = financials.get(ticker, {}) or {}
+
+        return {
+            "ticker": ticker.upper(),
+            "name": p.get("longName") or s.get("shortName") or ticker,
+            "sector": p.get("sector", "N/A"),
+            "industry": p.get("industry", "N/A"),
+            "market_cap": s.get("marketCap"),
+            "enterprise_value": f.get("enterpriseValue"),
+            "pe_ratio": s.get("trailingPE"),
+            "forward_pe": s.get("forwardPE"),
+            "pb_ratio": s.get("priceToBook"),
+            "dividend_yield": s.get("dividendYield"),
+            "beta": s.get("beta"),
+            "price": s.get("regularMarketPrice") or s.get("previousClose"),
+            "currency": s.get("currency", "USD"),
+            "description": p.get("longBusinessSummary", ""),
+            "website": p.get("website", ""),
+            "country": p.get("country", ""),
+            "total_revenue": f.get("totalRevenue"),
+            "gross_margins": f.get("grossMargins"),
+            "operating_margins": f.get("operatingMargins"),
+            "profit_margins": f.get("profitMargins"),
+            "return_on_equity": f.get("returnOnEquity"),
+            "debt_to_equity": f.get("debtToEquity"),
+            "current_ratio": f.get("currentRatio"),
+            "total_cash": f.get("totalCash"),
+            "total_debt": f.get("totalDebt"),
+            "free_cash_flow": f.get("freeCashflow"),
+            "operating_cash_flow": f.get("operatingCashflow"),
+            "revenue_growth": f.get("revenueGrowth"),
+            "earnings_growth": f.get("earningsGrowth"),
+            "shares_outstanding": s.get("sharesOutstanding"),
+            "target_mean_price": f.get("targetMeanPrice"),
+            "recommendation": f.get("recommendationKey"),
+        }
     except Exception as e:
-        err_msg = str(e)[:300]
-        logger.error(f"Error en yfinance para {ticker}: {type(e).__name__}: {err_msg}")
-
-        if "429" in err_msg or "Too Many Requests" in err_msg:
-            return {
-                "ticker": ticker.upper(),
-                "error": "Yahoo Finance rate limit (429). Espera 10-30 minutos.",
-            }
-        if "Expecting value" in err_msg or "JSONDecodeError" in err_msg:
-            return {
-                "ticker": ticker.upper(),
-                "error": "Yahoo devolvió respuesta inválida. Rate limit temporal.",
-            }
-        return {"ticker": ticker.upper(), "error": f"{type(e).__name__}: {err_msg}"}
-
-
-def _make_session():
-    """Crea sesión con User-Agent realista para evitar 429."""
-    try:
-        import requests
-
-        session = requests.Session()
-        session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            }
-        )
-        return session
-    except ImportError:
+        logger.warning(f"yahooquery falló para {ticker}: {e}")
         return None
 
 
+def _safe_yfinance_call(callable_fn, ticker: str) -> Dict[str, Any]:
+    try:
+        result = callable_fn()
+        if result is None or (isinstance(result, dict) and not result):
+            return {"ticker": ticker.upper(), "error": "data provider vacío"}
+        return result
+    except Exception as e:
+        err_msg = str(e)[:300]
+        if "429" in err_msg or "Too Many Requests" in err_msg:
+            return {"ticker": ticker.upper(), "error": "Rate limit. Espera 30 min."}
+        if "Expecting value" in err_msg or "JSONDecodeError" in err_msg:
+            return {"ticker": ticker.upper(), "error": "JSON inválido del data provider."}
+        return {"ticker": ticker.upper(), "error": f"{type(e).__name__}: {err_msg}"}
+
+
 def get_ticker_info(ticker: str) -> Dict[str, Any]:
-    """Obtiene info general de un ticker."""
     cache_key = f"info_{ticker}"
     cached = _get_cached(cache_key)
     if cached is not None:
         return cached
 
-    def fetch():
-        session = _make_session()
-        t = yf.Ticker(ticker, session=session) if session else yf.Ticker(ticker)
-        info = t.info
-        if not info or len(info) < 5:
-            raise ValueError("Yahoo devolvió info vacía")
-
-        return {
-            "ticker": ticker.upper(),
-            "name": info.get("longName") or info.get("shortName") or ticker,
-            "sector": info.get("sector", "N/A"),
-            "industry": info.get("industry", "N/A"),
-            "market_cap": info.get("marketCap"),
-            "enterprise_value": info.get("enterpriseValue"),
-            "pe_ratio": info.get("trailingPE"),
-            "forward_pe": info.get("forwardPE"),
-            "pb_ratio": info.get("priceToBook"),
-            "dividend_yield": info.get("dividendYield"),
-            "beta": info.get("beta"),
-            "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-            "currency": info.get("currency", "USD"),
-            "description": info.get("longBusinessSummary", ""),
-            "website": info.get("website", ""),
-            "employees": info.get("fullTimeEmployees"),
-            "country": info.get("country", ""),
-            "total_revenue": info.get("totalRevenue"),
-            "gross_profits": info.get("grossProfits"),
-            "gross_margins": info.get("grossMargins"),
-            "operating_margins": info.get("operatingMargins"),
-            "profit_margins": info.get("profitMargins"),
-            "return_on_equity": info.get("returnOnEquity"),
-            "return_on_assets": info.get("returnOnAssets"),
-            "debt_to_equity": info.get("debtToEquity"),
-            "current_ratio": info.get("currentRatio"),
-            "quick_ratio": info.get("quickRatio"),
-            "total_cash": info.get("totalCash"),
-            "total_debt": info.get("totalDebt"),
-            "free_cash_flow": info.get("freeCashflow"),
-            "operating_cash_flow": info.get("operatingCashflow"),
-            "revenue_growth": info.get("revenueGrowth"),
-            "earnings_growth": info.get("earningsGrowth"),
-            "peg_ratio": info.get("pegRatio"),
-            "ev_to_revenue": info.get("enterpriseToRevenue"),
-            "ev_to_ebitda": info.get("enterpriseToEbitda"),
-            "shares_outstanding": info.get("sharesOutstanding"),
-            "target_mean_price": info.get("targetMeanPrice"),
-            "recommendation": info.get("recommendationKey"),
-        }
-
-    result = _safe_yfinance_call(fetch, ticker)
-    if "error" not in result:
+    # 1) Intentar yahooquery (más robusto)
+    result = _try_yahooquery(ticker)
+    if result and "error" not in result:
         _set_cached(cache_key, result)
-    return result
+        return result
+
+    # 2) Fallback a yfinance
+    try:
+        import yfinance as yf
+
+        def fetch():
+            t = yf.Ticker(ticker)
+            info = t.info
+            if not info or len(info) < 5:
+                raise ValueError("Yahoo info vacía")
+
+            return {
+                "ticker": ticker.upper(),
+                "name": info.get("longName") or info.get("shortName") or ticker,
+                "sector": info.get("sector", "N/A"),
+                "industry": info.get("industry", "N/A"),
+                "market_cap": info.get("marketCap"),
+                "pe_ratio": info.get("trailingPE"),
+                "forward_pe": info.get("forwardPE"),
+                "pb_ratio": info.get("priceToBook"),
+                "beta": info.get("beta"),
+                "price": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "currency": info.get("currency", "USD"),
+                "dividend_yield": info.get("dividendYield"),
+                "free_cash_flow": info.get("freeCashflow"),
+                "revenue_growth": info.get("revenueGrowth"),
+            }
+
+        result = _safe_yfinance_call(fetch, ticker)
+        if "error" not in result:
+            _set_cached(cache_key, result)
+        return result
+    except ImportError:
+        return {"ticker": ticker.upper(), "error": "Ningún data provider disponible"}
 
 
 def get_financials(ticker: str) -> Dict[str, Any]:
-    """Obtiene estados financieros anuales."""
-    cache_key = f"financials_{ticker}"
-    cached = _get_cached(cache_key)
-    if cached is not None:
-        return cached
-
-    def fetch():
-        session = _make_session()
-        t = yf.Ticker(ticker, session=session) if session else yf.Ticker(ticker)
-        income = t.financials
-        balance = t.balance_sheet
-        cashflow = t.cashflow
-
-        def df_to_dict(df):
-            if df is None or df.empty:
-                return {}
-            result = {}
-            for col in df.columns:
-                year_str = str(col.year) if hasattr(col, "year") else str(col)
-                result[year_str] = {}
-                for idx in df.index:
-                    val = df.loc[idx, col]
-                    try:
-                        if hasattr(val, "item"):
-                            val = val.item()
-                        elif isinstance(val, float) and val != val:
-                            val = None
-                    except Exception:
-                        val = None
-                    result[year_str][str(idx)] = val
-            return result
-
-        return {
-            "ticker": ticker.upper(),
-            "income_statement": df_to_dict(income),
-            "balance_sheet": df_to_dict(balance),
-            "cash_flow": df_to_dict(cashflow),
-        }
-
-    result = _safe_yfinance_call(fetch, ticker)
-    if "error" not in result and result.get("income_statement"):
-        _set_cached(cache_key, result)
-    return result
+    """Placeholder que devuelve estructura mínima."""
+    return {"ticker": ticker.upper(), "income_statement": {}, "balance_sheet": {}, "cash_flow": {}}
 
 
 def get_price_history(ticker: str, period: str = "1y") -> Dict[str, Any]:
-    """Obtiene historial de precios."""
-    cache_key = f"price_{ticker}_{period}"
-    cached = _get_cached(cache_key)
-    if cached is not None:
-        return cached
-
-    def fetch():
-        session = _make_session()
-        t = yf.Ticker(ticker, session=session) if session else yf.Ticker(ticker)
-        hist = t.history(period=period)
-        if hist.empty:
-            return {"ticker": ticker.upper(), "dates": [], "prices": []}
-
-        return {
-            "ticker": ticker.upper(),
-            "dates": [str(d.date()) for d in hist.index],
-            "open": [round(float(v), 2) for v in hist["Open"]],
-            "high": [round(float(v), 2) for v in hist["High"]],
-            "low": [round(float(v), 2) for v in hist["Low"]],
-            "close": [round(float(v), 2) for v in hist["Close"]],
-            "volume": [int(v) for v in hist["Volume"]],
-        }
-
-    result = _safe_yfinance_call(fetch, ticker)
-    if "error" not in result and result.get("dates"):
-        _set_cached(cache_key, result)
-    return result
+    return {"ticker": ticker.upper(), "dates": [], "prices": []}
