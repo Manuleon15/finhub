@@ -13,7 +13,11 @@ PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    """Verifica API key en header X-API-Key o query param api_key."""
+    """Verifica API key en header X-API-Key o query param api_key.
+    
+    En dev (api_key por defecto 'finhub-dev-key-change-me'), se permite
+    acceso sin key para simplificar el desarrollo local.
+    """
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -22,7 +26,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS" or path in PUBLIC_PATHS:
             return await call_next(request)
 
-        # En dev, permitir sin key si es la key por defecto
+        # Si la key configurada es la por defecto, permitir sin auth en dev
+        if settings.api_key == "finhub-dev-key-change-me":
+            return await call_next(request)
+
+        # Producción: requerir API key
         api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key", "")
 
         if api_key == settings.api_key:
@@ -32,4 +40,3 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             status_code=401,
             content={"detail": "API key inválida o no proporcionada. Usa X-API-Key header."},
         )
-
