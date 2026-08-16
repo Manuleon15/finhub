@@ -434,6 +434,8 @@ def analyze_company(ticker: str) -> Dict[str, Any]:
         "ev_to_revenue": info.get("ev_to_revenue"),
         "ev_to_ebitda": info.get("ev_to_ebitda"),
         "peg_ratio": info.get("peg_ratio"),
+        "eps": info.get("eps"),
+        "book_value_per_share": info.get("book_value_per_share"),
         "earnings_yield": earnings_yield,
         "fcf_yield": fcf_yield,
         "dividend_yield": info.get("dividend_yield"),
