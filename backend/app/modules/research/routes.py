@@ -138,7 +138,7 @@ def analyze(
 
     return {
         "ticker": clean_t,
-        "enabled_models": valuation_result.get("models", {}).keys() if valuation_result.get("models") else enabled_models or AVAILABLE_MODELS,
+        "enabled_models": list(valuation_result.get("models", {}).keys()) if valuation_result.get("models") else enabled_models or AVAILABLE_MODELS,
         "available_models": AVAILABLE_MODELS,
         "business_overview": analyzer_data["business_overview"],
         "financial_quality": analyzer_data["financial_quality"],
