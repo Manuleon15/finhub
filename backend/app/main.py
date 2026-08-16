@@ -7,16 +7,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.modules.portfolio.routes import router as portfolio_router
 from app.core.config import get_settings
 from app.core.db import init_db
 from app.core.security import APIKeyMiddleware
 from app.modules.research.routes import router as research_router
 
+
 logger = logging.getLogger("finhub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
 
 settings = get_settings()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,6 +50,8 @@ app.add_middleware(APIKeyMiddleware)
 
 # --- Routers ---
 app.include_router(research_router, prefix="/api/research", tags=["Equity Research"])
+
+app.include_router(portfolio_router, prefix="/api/portfolio", tags=["Portfolio Tracker"])
 
 # --- Health & root ---
 @app.get("/")
