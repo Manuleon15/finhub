@@ -49,23 +49,41 @@ def _try_yahooquery(ticker: str) -> Optional[Dict[str, Any]]:
         p = profile.get(ticker, {}) or {}
         f = financials.get(ticker, {}) or {}
 
+        # Módulo adicional para EPS/book value/PEG — en un try aparte para
+        # que, si este módulo concreto falla, no tire abajo todo lo demás.
+        k: Dict[str, Any] = {}
+        try:
+            key_stats = t.key_stats
+            k = key_stats.get(ticker, {}) or {}
+        except Exception:
+            k = {}
+
+        price = s.get("regularMarketPrice") or s.get("previousClose")
+
         return {
             "ticker": ticker.upper(),
             "name": p.get("longName") or s.get("shortName") or ticker,
             "sector": p.get("sector", "N/A"),
             "industry": p.get("industry", "N/A"),
             "market_cap": s.get("marketCap"),
-            "enterprise_value": f.get("enterpriseValue"),
+            "enterprise_value": f.get("enterpriseValue") or k.get("enterpriseValue"),
             "pe_ratio": s.get("trailingPE"),
-            "forward_pe": s.get("forwardPE"),
-            "pb_ratio": s.get("priceToBook"),
+            "forward_pe": s.get("forwardPE") or k.get("forwardPE"),
+            "pb_ratio": s.get("priceToBook") or k.get("priceToBook"),
+            "peg_ratio": k.get("pegRatio"),
+            "ev_to_revenue": k.get("enterpriseToRevenue"),
+            "ev_to_ebitda": k.get("enterpriseToEbitda"),
+            "eps": k.get("trailingEps"),
+            "book_value_per_share": k.get("bookValue"),
             "dividend_yield": s.get("dividendYield"),
             "beta": s.get("beta"),
-            "price": s.get("regularMarketPrice") or s.get("previousClose"),
+            "price": price,
+            "current_price": price,
             "currency": s.get("currency", "USD"),
             "description": p.get("longBusinessSummary", ""),
             "website": p.get("website", ""),
             "country": p.get("country", ""),
+            "employees": p.get("fullTimeEmployees"),
             "total_revenue": f.get("totalRevenue"),
             "gross_margins": f.get("grossMargins"),
             "operating_margins": f.get("operatingMargins"),
@@ -79,7 +97,7 @@ def _try_yahooquery(ticker: str) -> Optional[Dict[str, Any]]:
             "operating_cash_flow": f.get("operatingCashflow"),
             "revenue_growth": f.get("revenueGrowth"),
             "earnings_growth": f.get("earningsGrowth"),
-            "shares_outstanding": s.get("sharesOutstanding"),
+            "shares_outstanding": s.get("sharesOutstanding") or k.get("sharesOutstanding"),
             "target_mean_price": f.get("targetMeanPrice"),
             "recommendation": f.get("recommendationKey"),
         }
@@ -103,73 +121,100 @@ def _safe_yfinance_call(callable_fn, ticker: str) -> Dict[str, Any]:
         return {"ticker": ticker.upper(), "error": f"{type(e).__name__}: {err_msg}"}
 
 
+def _fetch_yfinance_info(ticker: str) -> Dict[str, Any]:
+    """Fetch de datos vía yfinance. Lanza excepción si falla (la maneja el caller)."""
+    import yfinance as yf
+
+    t = yf.Ticker(ticker)
+    info = t.info
+    if not info or len(info) < 5:
+        raise ValueError("Yahoo info vacía")
+
+    price = info.get("currentPrice") or info.get("regularMarketPrice")
+
+    return {
+        "ticker": ticker.upper(),
+        "name": info.get("longName") or info.get("shortName") or ticker,
+        "sector": info.get("sector", "N/A"),
+        "industry": info.get("industry", "N/A"),
+        "description": info.get("longBusinessSummary", ""),
+        "website": info.get("website", ""),
+        "country": info.get("country", ""),
+        "employees": info.get("fullTimeEmployees"),
+        "market_cap": info.get("marketCap"),
+        "enterprise_value": info.get("enterpriseValue"),
+        "pe_ratio": info.get("trailingPE"),
+        "forward_pe": info.get("forwardPE"),
+        "pb_ratio": info.get("priceToBook"),
+        "peg_ratio": info.get("pegRatio") or info.get("trailingPegRatio"),
+        "ev_to_revenue": info.get("enterpriseToRevenue"),
+        "ev_to_ebitda": info.get("enterpriseToEbitda"),
+        "beta": info.get("beta"),
+        "price": price,
+        "current_price": price,
+        "eps": info.get("trailingEps"),
+        "book_value_per_share": info.get("bookValue"),
+        "currency": info.get("currency", "USD"),
+        "dividend_yield": info.get("dividendYield"),
+        "gross_margins": info.get("grossMargins"),
+        "operating_margins": info.get("operatingMargins"),
+        "profit_margins": info.get("profitMargins"),
+        "return_on_equity": info.get("returnOnEquity"),
+        "debt_to_equity": info.get("debtToEquity"),
+        "current_ratio": info.get("currentRatio"),
+        "total_cash": info.get("totalCash"),
+        "total_debt": info.get("totalDebt"),
+        "total_revenue": info.get("totalRevenue"),
+        "free_cash_flow": info.get("freeCashflow"),
+        "operating_cash_flow": info.get("operatingCashflow"),
+        "revenue_growth": info.get("revenueGrowth"),
+        "earnings_growth": info.get("earningsGrowth"),
+        "shares_outstanding": info.get("sharesOutstanding"),
+        "target_mean_price": info.get("targetMeanPrice"),
+        "recommendation": info.get("recommendationKey"),
+    }
+
+
 def get_ticker_info(ticker: str) -> Dict[str, Any]:
     cache_key = f"info_{ticker}"
     cached = _get_cached(cache_key)
     if cached is not None:
         return cached
 
-    # 1) Intentar yahooquery (más robusto)
-    result = _try_yahooquery(ticker)
-    if result and "error" not in result:
-        _set_cached(cache_key, result)
-        return result
+    # 1) yahooquery (rápido, pero le faltan varios campos: PEG, EV/Revenue,
+    #    EV/EBITDA, EPS, book value...)
+    yq_result = _try_yahooquery(ticker)
+    if yq_result and "error" in yq_result:
+        yq_result = None
 
-    # 2) Fallback a yfinance
+    # 2) yfinance (más completo en general, pero a veces falla o da rate limit)
+    yf_result: Optional[Dict[str, Any]] = None
+    yf_error: Optional[Dict[str, Any]] = None
     try:
-        import yfinance as yf
-
-        def fetch():
-            t = yf.Ticker(ticker)
-            info = t.info
-            if not info or len(info) < 5:
-                raise ValueError("Yahoo info vacía")
-
-            return {
-                "ticker": ticker.upper(),
-                "name": info.get("longName") or info.get("shortName") or ticker,
-                "sector": info.get("sector", "N/A"),
-                "industry": info.get("industry", "N/A"),
-                "description": info.get("longBusinessSummary", ""),
-                "website": info.get("website", ""),
-                "country": info.get("country", ""),
-                "employees": info.get("fullTimeEmployees"),
-                "market_cap": info.get("marketCap"),
-                "enterprise_value": info.get("enterpriseValue"),
-                "pe_ratio": info.get("trailingPE"),
-                "forward_pe": info.get("forwardPE"),
-                "pb_ratio": info.get("priceToBook"),
-                "peg_ratio": info.get("pegRatio") or info.get("trailingPegRatio"),
-                "ev_to_revenue": info.get("enterpriseToRevenue"),
-                "ev_to_ebitda": info.get("enterpriseToEbitda"),
-                "beta": info.get("beta"),
-                "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-                "currency": info.get("currency", "USD"),
-                "dividend_yield": info.get("dividendYield"),
-                "gross_margins": info.get("grossMargins"),
-                "operating_margins": info.get("operatingMargins"),
-                "profit_margins": info.get("profitMargins"),
-                "return_on_equity": info.get("returnOnEquity"),
-                "debt_to_equity": info.get("debtToEquity"),
-                "current_ratio": info.get("currentRatio"),
-                "total_cash": info.get("totalCash"),
-                "total_debt": info.get("totalDebt"),
-                "total_revenue": info.get("totalRevenue"),
-                "free_cash_flow": info.get("freeCashflow"),
-                "operating_cash_flow": info.get("operatingCashflow"),
-                "revenue_growth": info.get("revenueGrowth"),
-                "earnings_growth": info.get("earningsGrowth"),
-                "shares_outstanding": info.get("sharesOutstanding"),
-                "target_mean_price": info.get("targetMeanPrice"),
-                "recommendation": info.get("recommendationKey"),
-            }
-
-        result = _safe_yfinance_call(fetch, ticker)
-        if "error" not in result:
-            _set_cached(cache_key, result)
-        return result
+        yf_result = _safe_yfinance_call(lambda: _fetch_yfinance_info(ticker), ticker)
+        if "error" in yf_result:
+            yf_error = yf_result
+            yf_result = None
     except ImportError:
-        return {"ticker": ticker.upper(), "error": "Ningún data provider disponible"}
+        yf_error = {"ticker": ticker.upper(), "error": "yfinance no disponible"}
+
+    if not yq_result and not yf_result:
+        # Ninguna de las dos fuentes ha funcionado
+        return yf_error or {"ticker": ticker.upper(), "error": "Ningún data provider disponible"}
+
+    if yq_result and yf_result:
+        # Combinar: yahooquery manda, pero cualquier campo que le falte
+        # (y no en el otro sentido) se rellena con yfinance.
+        merged = dict(yq_result)
+        for key, val in yf_result.items():
+            if merged.get(key) is None and val is not None:
+                merged[key] = val
+        result = merged
+    else:
+        result = yq_result or yf_result
+
+    _set_cached(cache_key, result)
+    return result
 
 
 def _df_to_year_dict(df) -> Dict[str, Dict[str, Any]]:
