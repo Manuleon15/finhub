@@ -1,8 +1,12 @@
-import { auth } from "./auth";
-export { auth as middleware } from "./auth";
+// Auth desactivado temporalmente (dev local)
+// Para reactivar, restaurar el middleware que usa NextAuth.
+import { NextResponse } from "next/server";
+
+export default function middleware() {
+  return NextResponse.next();
+}
 
 export const config = {
-  // Proteger estas rutas — el resto son públicas
-  matcher: ["/portfolio/:path*", "/copilot/:path*", "/settings/:path*"],
+  matcher: [],
 };
 
