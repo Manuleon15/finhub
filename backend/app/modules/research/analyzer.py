@@ -190,7 +190,7 @@ def get_metric(
     return None
 
 
-def calculate_roic(financials: Dict[str, Any]) -> Optional[float]:
+def calculate_roic(financials: Dict[str, Any], info: Optional[Dict[str, Any]] = None) -> Optional[float]:
     """ROIC = NOPAT / (Total Debt + Total Equity)
 
     NOPAT = Operating Income * (1 - tax_rate)
@@ -201,7 +201,18 @@ def calculate_roic(financials: Dict[str, Any]) -> Optional[float]:
     total_debt = get_metric(financials, "balance_sheet", "Total Debt", 0)
     total_equity = get_metric(financials, "balance_sheet", "Stockholders Equity", 0)
 
+    # Respaldo: si el estado financiero en crudo no trae el campo (frecuente
+    # en empresas extranjeras con nombres de línea distintos), usar los
+    # ratios ya calculados que trae el propio proveedor.
+    info = info or {}
+    if total_debt is None and info.get("total_debt") is not None:
+        total_debt = info["total_debt"]
+
     if ebit is None or (total_debt is None and total_equity is None):
+        if info.get("return_on_equity") is not None:
+            # ROE como aproximación de última instancia (no es ROIC exacto,
+            # pero es mejor que N/A cuando no hay datos de EBIT/deuda).
+            return round(info["return_on_equity"], 4)
         return None
 
     tax_rate = 0.21
@@ -238,7 +249,7 @@ def calculate_fcf_margin(financials: Dict[str, Any], info: Dict[str, Any]) -> Op
     return round(fcf / revenue, 4)
 
 
-def calculate_debt_to_equity(financials: Dict[str, Any]) -> Optional[float]:
+def calculate_debt_to_equity(financials: Dict[str, Any], info: Optional[Dict[str, Any]] = None) -> Optional[float]:
     """Debt-to-Equity = Total Debt / Stockholders Equity"""
     total_debt = get_metric(financials, "balance_sheet", "Total Debt", 0)
     equity = get_metric(financials, "balance_sheet", "Stockholders Equity", 0)
@@ -247,11 +258,28 @@ def calculate_debt_to_equity(financials: Dict[str, Any]) -> Optional[float]:
         # yfinance a veces usa "Total Debt" vs "Long Term Debt"
         total_debt = get_metric(financials, "balance_sheet", "Long Term Debt", 0)
 
-    return safe_div(total_debt, equity)
+    result = safe_div(total_debt, equity)
+    if result is not None:
+        return result
+
+    # Respaldo: ratio ya calculado por el proveedor (yfinance suele darlo
+    # en tanto por ciento, ej. 45.2 = 45.2%; lo pasamos a razón decimal).
+    info = info or {}
+    if info.get("debt_to_equity") is not None:
+        raw = info["debt_to_equity"]
+        return round(raw / 100, 4) if raw > 5 else round(raw, 4)
+
+    return None
 
 
 def calculate_gross_margin(financials: Dict[str, Any], info: Dict[str, Any]) -> Optional[float]:
     """Gross Margin = Gross Profit / Revenue"""
+    # El ratio que ya trae el proveedor es más fiable que reconstruirlo a
+    # mano (los nombres de línea en los estados financieros en crudo
+    # varían mucho, sobre todo en empresas que no reportan en USD/GAAP).
+    if info.get("gross_margins") is not None:
+        return round(info["gross_margins"], 4)
+
     gross_profit = get_metric(financials, "income_statement", "Gross Profit", 0)
     revenue = get_metric(financials, "income_statement", "Total Revenue", 0)
 
@@ -354,9 +382,9 @@ def analyze_company(ticker: str) -> Dict[str, Any]:
         return {"ticker": ticker.upper(), "error": info["error"]}
 
     # Calcular todas las métricas
-    roic = calculate_roic(financials)
+    roic = calculate_roic(financials, info)
     fcf_margin = calculate_fcf_margin(financials, info)
-    debt_to_equity = calculate_debt_to_equity(financials)
+    debt_to_equity = calculate_debt_to_equity(financials, info)
     gross_margin = calculate_gross_margin(financials, info)
     revenue_growth = calculate_revenue_growth(financials, info)
     fcf_growth = calculate_fcf_growth(financials)
