@@ -142,7 +142,7 @@ def analyze(
         "available_models": AVAILABLE_MODELS,
         "business_overview": analyzer_data["business_overview"],
         "financial_quality": analyzer_data["financial_quality"],
-        "valuation_metrics": analyzer_data["valuation"],
+        "valuation": analyzer_data["valuation"],
         "dcf": dcf_data,
         "valuation_models": valuation_result.get("models", {}),
         "valuation_weights": valuation_result.get("weights", {}),
