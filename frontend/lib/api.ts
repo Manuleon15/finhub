@@ -34,3 +34,22 @@ export function buildQuery(params: Record<string, string | number | boolean>): s
   return `?${search.toString()}`;
 }
 
+/** Sube un archivo (Excel) al backend. Para el import del portfolio. */
+export async function apiUpload<T>(
+  path: string,
+  file: File
+): Promise<T> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: fd,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `API error: ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
