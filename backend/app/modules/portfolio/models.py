@@ -1,102 +1,106 @@
-"""Modelos SQLAlchemy para el Portfolio Tracker.
+"""Modelos SQLAlchemy del Portfolio Tracker.
 
-Tablas:
-- Account: cuentas de broker (IBKR, Quantfury, Trade Republic, etc.)
-- Position: posición abierta
-- Transaction: movimientos (compra, venta, dividendo)
-- MonthlySnapshot: snapshot mensual para TWR vs SP500
+Tres tablas:
+- Account: cuenta/broker (IBKR, TR, etc.) — opcional, útil si operas en varios sitios.
+- Position: posición actual por ticker (lo que hoy tienes en la pestaña "DATOS INVERSIONES").
+- Transaction: histórico de compra/venta (lo que hoy tienes en "MOVIMIENTOS 2025/2026").
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Optional
+import datetime as dt
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 
 
 class Account(Base):
+    """Cuenta o broker (IBKR, Trade Republic, etc.). Opcional."""
+
     __tablename__ = "accounts"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    broker: Mapped[str] = mapped_column(String(64))
-    currency: Mapped[str] = mapped_column(String(3), default="USD")
-    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    broker: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     positions: Mapped[list["Position"]] = relationship(back_populates="account")
-    transactions: Mapped[list["Transaction"]] = relationship(back_populates="account")
 
 
 class Position(Base):
+    """Posición actual en un activo. Una fila por ticker (se sobreescribe al reimportar)."""
+
     __tablename__ = "positions"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+
     ticker: Mapped[str] = mapped_column(String(20), index=True)
-    name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    quantity: Mapped[float] = mapped_column(Float)
-    buy_price: Mapped[float] = mapped_column(Float)
-    buy_date: Mapped[date] = mapped_column(Date, default=date.today)
-    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
-    current_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    sector: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    industry: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    beta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    per: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    dividend_per_share: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    dividend_yield: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # precio de compra medio
+    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    target_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    beta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dividend_per_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pl: Mapped[float | None] = mapped_column(Float, nullable=True)  # P/G realizadas
 
-    last_updated: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    currency: Mapped[str] = mapped_column(String(10), default="USD")
+    sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    account: Mapped["Account"] = relationship(back_populates="positions")
-    transactions: Mapped[list["Transaction"]] = relationship(back_populates="position")
+    account: Mapped["Account | None"] = relationship(back_populates="positions")
+
+    # --- Propiedades calculadas (no se guardan en DB) ---
+    @property
+    def market_value(self) -> float | None:
+        if self.current_price is None:
+            return None
+        return round(self.quantity * self.current_price, 2)
+
+    @property
+    def cost_basis(self) -> float | None:
+        if self.avg_price is None:
+            return None
+        return round(self.quantity * self.avg_price, 2)
+
+    @property
+    def unrealized_pl(self) -> float | None:
+        mv, cb = self.market_value, self.cost_basis
+        if mv is None or cb is None:
+            return None
+        return round(mv - cb, 2)
+
+    @property
+    def unrealized_pl_pct(self) -> float | None:
+        cb = self.cost_basis
+        pl = self.unrealized_pl
+        if cb is None or pl is None or cb == 0:
+            return None
+        return round(pl / cb, 4)
 
 
 class Transaction(Base):
+    """Movimiento histórico: compra o venta de un ticker."""
+
     __tablename__ = "transactions"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
-    position_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("positions.id"), nullable=True, index=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ticker: Mapped[str] = mapped_column(String(20), index=True)
-    type: Mapped[str] = mapped_column(String(16))  # buy, sell, dividend
-    quantity: Mapped[float] = mapped_column(Float)
-    price: Mapped[float] = mapped_column(Float)
-    fees: Mapped[float] = mapped_column(Float, default=0.0)
-    currency: Mapped[str] = mapped_column(String(3), default="USD")
-    date: Mapped[date] = mapped_column(Date, index=True)
-    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    tx_type: Mapped[str] = mapped_column(String(10))  # "buy" | "sell"
 
-    account: Mapped["Account"] = relationship(back_populates="transactions")
-    position: Mapped[Optional["Position"]] = relationship(back_populates="transactions")
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pl: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    date: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-class MonthlySnapshot(Base):
-    __tablename__ = "monthly_snapshots"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    year: Mapped[int] = mapped_column(index=True)
-    month: Mapped[int] = mapped_column(index=True)
-    portfolio_value: Mapped[float] = mapped_column(Float)
-    portfolio_twr_month: Mapped[float] = mapped_column(Float)
-    sp500_twr_month: Mapped[float] = mapped_column(Float)
-    invested_in_period: Mapped[float] = mapped_column(Float, default=0.0)
-    portfolio_twr_ytd: Mapped[float] = mapped_column(Float)
-    sp500_twr_ytd: Mapped[float] = mapped_column(Float)
-    currency: Mapped[str] = mapped_column(String(3), default="USD")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
