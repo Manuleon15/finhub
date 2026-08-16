@@ -512,11 +512,11 @@ def run_all_valuation_models(
     enabled_models: lista de modelos a usar. Si None, usa todos.
     custom_weights: pesos custom por modelo (deben sumar 1.0).
     """
-    info = analyzer_data.get("raw", {}).get("info", {})
-    financials = analyzer_data.get("raw", {}).get("financials", {})
-    eps = analyzer_data.get("raw", {}).get("eps")
-    bvps = analyzer_data.get("raw", {}).get("book_value_per_share")
-    current_price = analyzer_data.get("raw", {}).get("current_price")
+    info = analyzer_data.get("raw_info", {}) or {}
+    financials = analyzer_data.get("raw_financials", {}) or {}
+    eps = info.get("eps")
+    bvps = info.get("book_value_per_share")
+    current_price = info.get("current_price") or info.get("price")
     roic = analyzer_data.get("financial_quality", {}).get("roic")
 
     all_models = ["graham", "magic_formula", "piotroski", "altman_z", "owner_earnings", "dcf"]
