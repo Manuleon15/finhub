@@ -284,18 +284,39 @@ def build_score_from_analyzer_and_models(
             f"{buy_signals} BUY, {sell_signals} SELL."
         )
 
+    # El frontend pinta "Valoración" con el mismo formato que "Calidad"
+    # (score/max/breakdown), pero antes no se construía este objeto —
+    # solo existía como número suelto dentro de composite.
+    valuation_breakdown: Dict[str, Any] = {}
+    if valuation_models_result and valuation_models_result.get("models"):
+        for model_name, r in valuation_models_result["models"].items():
+            valuation_breakdown[model_name] = r.get("verdict", "HOLD")
+
+    valuation_score = {
+        "score": composite["valuation_contribution"],
+        "max": 70,
+        "breakdown": valuation_breakdown,
+    }
+
+    description = " ".join(explanation_parts)
+
     return {
         "quality_score": quality_breakdown,
+        "valuation_score": valuation_score,
         "valuation_models": (
             valuation_models_result.get("models", {}) if valuation_models_result else {}
         ),
         "composite": composite,
+        "total_score": composite["composite_score"],
+        "max_score": 100,
         "recommendation": {
             **composite["verdict"],
             "score": composite["composite_score"],
             "buy_signals": buy_signals,
             "sell_signals": sell_signals,
-            "explanation": " ".join(explanation_parts),
+            "explanation": description,
+            "description": description,
         },
         "models_summary": models_summary,
     }
+
