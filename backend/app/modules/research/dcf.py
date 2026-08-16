@@ -97,19 +97,19 @@ def estimate_fcf_multi_level(
             return ocf - capex, "operating_cashflow_minus_capex"
         return ocf, "operating_cashflow_no_capex"
 
-    # Nivel 2: info.summaryDetail.freeCashflow
-    if info.get("freeCashflow") is not None:
-        return info["freeCashflow"], "info_freeCashflow"
+    # Nivel 2: info.free_cash_flow (ya calculado por el proveedor)
+    if info.get("free_cash_flow") is not None:
+        return info["free_cash_flow"], "info_free_cash_flow"
 
-    # Nivel 3: info.financialData.freeCashflow
-    if info.get("freeCashFlow") is not None:
-        return info["freeCashFlow"], "info_financialData_freeCashflow"
+    # Nivel 3: estimar FCF = operating_cash_flow desde info si no hay capex
+    if info.get("operating_cash_flow") is not None:
+        return info["operating_cash_flow"], "info_operating_cash_flow_no_capex"
 
     # Nivel 4: estimación desde net income
     ni = _find_field_any_year(financials, "income_statement", FIELD_CANDIDATES["net_income"])
-    if ni is not None and info.get("sharesOutstanding"):
+    if ni is not None and info.get("shares_outstanding"):
         # Estimación conservadora: net income * 80% / shares = EPS-adjusted FCF
-        shares = info["sharesOutstanding"]
+        shares = info["shares_outstanding"]
         # FCF proxy = NI pero solo si NI > 0 y empresa madura
         if ni > 0:
             # Usar 75% de NI como estimación conservadora de FCF
@@ -233,8 +233,8 @@ def run_dcf(ticker: str, analyzer_data: Optional[Dict[str, Any]] = None) -> Dict
         info = get_ticker_info(ticker)
         financials = get_financials(ticker)
     else:
-        info = analyzer_data.get("raw", {}).get("info", {})
-        financials = analyzer_data.get("raw", {}).get("financials", {})
+        info = analyzer_data.get("raw_info", {}) or {}
+        financials = analyzer_data.get("raw_financials", {}) or {}
 
     if "error" in info:
         return {"ticker": ticker.upper(), "error": info["error"]}
