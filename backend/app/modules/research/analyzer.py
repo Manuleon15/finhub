@@ -15,11 +15,140 @@ Métricas calculadas:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.data_providers.yahoo import get_ticker_info, get_financials
 
 logger = logging.getLogger("finhub.analyzer")
+
+
+# Nombres alternativos que puede usar yfinance/yahooquery para cada campo
+# (varían según el proveedor y a veces entre tickers).
+FIELD_CANDIDATES: Dict[str, List[str]] = {
+    "net_income": [
+        "Net Income",
+        "NetIncome",
+        "Net Income Common Stockholders",
+        "Net Income Applicable To Common Shares",
+    ],
+    "revenue": ["Total Revenue", "TotalRevenue", "Revenue"],
+    "gross_profit": ["Gross Profit", "GrossProfit"],
+    "ebit": ["EBIT", "Ebit", "Operating Income"],
+    "operating_cash_flow": [
+        "Operating Cash Flow",
+        "OperatingCashFlow",
+        "Total Cash From Operating Activities",
+        "Cash Flow From Continuing Operating Activities",
+    ],
+    "capital_expenditure": ["Capital Expenditure", "CapitalExpenditure", "Purchase Of PPE"],
+    "cash": [
+        "Cash And Cash Equivalents",
+        "CashAndCashEquivalents",
+        "Cash",
+        "Cash Cash Equivalents And Short Term Investments",
+    ],
+    "total_debt": ["Total Debt", "TotalDebt", "Long Term Debt"],
+    "total_equity": [
+        "Stockholders Equity",
+        "StockholdersEquity",
+        "Total Equity Gross Minority Interest",
+        "Total Stockholder Equity",
+    ],
+    "total_assets": ["Total Assets", "TotalAssets"],
+    "current_assets": ["Total Current Assets", "Current Assets", "TotalCurrentAssets"],
+    "current_liabilities": ["Total Current Liabilities", "Current Liabilities", "TotalCurrentLiabilities"],
+    "shares_outstanding": [
+        "Diluted Average Shares",
+        "Basic Average Shares",
+        "Ordinary Shares Number",
+        "Share Issued",
+    ],
+}
+
+
+def _find_field(
+    financials: Dict[str, Any],
+    statement: str,
+    candidates: List[str],
+    year_offset: int = 0,
+) -> Optional[float]:
+    """Busca el primer campo disponible (de una lista de nombres alternativos)
+    para un año concreto. year_offset=0 -> año más reciente."""
+    stmt = financials.get(statement, {})
+    if not stmt:
+        return None
+    years = sorted(stmt.keys(), reverse=True)
+    if year_offset >= len(years):
+        return None
+    year_data = stmt[years[year_offset]] or {}
+    for name in candidates:
+        val = year_data.get(name)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _find_field_any_year(
+    financials: Dict[str, Any],
+    statement: str,
+    candidates: List[str],
+) -> Optional[float]:
+    """Como _find_field, pero recorre todos los años disponibles (del más
+    reciente al más antiguo) hasta encontrar un valor. Útil como último
+    fallback cuando no importa de qué año venga el dato."""
+    stmt = financials.get(statement, {})
+    if not stmt:
+        return None
+    for year in sorted(stmt.keys(), reverse=True):
+        year_data = stmt[year] or {}
+        for name in candidates:
+            val = year_data.get(name)
+            if val is not None:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+    return None
+
+
+def get_capex(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "cash_flow", FIELD_CANDIDATES["capital_expenditure"], year_offset)
+
+
+def get_cash(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "balance_sheet", FIELD_CANDIDATES["cash"], year_offset)
+
+
+def get_operating_cf(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "cash_flow", FIELD_CANDIDATES["operating_cash_flow"], year_offset)
+
+
+def get_revenue(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "income_statement", FIELD_CANDIDATES["revenue"], year_offset)
+
+
+def get_total_debt(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "balance_sheet", FIELD_CANDIDATES["total_debt"], year_offset)
+
+
+def get_total_equity(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "balance_sheet", FIELD_CANDIDATES["total_equity"], year_offset)
+
+
+def get_total_assets(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    return _find_field(financials, "balance_sheet", FIELD_CANDIDATES["total_assets"], year_offset)
+
+
+def get_fcf(financials: Dict[str, Any], year_offset: int = 0) -> Optional[float]:
+    """Free Cash Flow = Operating Cash Flow - Capex (valor absoluto)."""
+    ocf = get_operating_cf(financials, year_offset)
+    capex = get_capex(financials, year_offset)
+    if ocf is not None and capex is not None:
+        return ocf - abs(capex)
+    return None
 
 
 def safe_div(a: Optional[float], b: Optional[float]) -> Optional[float]:
@@ -292,4 +421,3 @@ def analyze_company(ticker: str) -> Dict[str, Any]:
         "raw_info": info,
         "raw_financials": financials,
     }
-
