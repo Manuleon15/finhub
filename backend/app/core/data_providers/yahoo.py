@@ -150,10 +150,89 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
         return {"ticker": ticker.upper(), "error": "Ningún data provider disponible"}
 
 
+def _df_to_year_dict(df) -> Dict[str, Dict[str, Any]]:
+    """Convierte un DataFrame de yfinance (filas=conceptos, columnas=fechas)
+    a {"2024": {"Net Income": 123.0, ...}, "2023": {...}, ...}.
+
+    yfinance devuelve NaN para huecos; los convertimos a None para que
+    el resto del código (get_metric, _find_field...) los trate como
+    "dato no disponible" de forma consistente.
+    """
+    if df is None or df.empty:
+        return {}
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for col in df.columns:
+        try:
+            year_key = str(col.year) if hasattr(col, "year") else str(col)
+        except Exception:
+            year_key = str(col)
+
+        year_data: Dict[str, Any] = {}
+        for row_name, value in df[col].items():
+            if value is None:
+                year_data[row_name] = None
+                continue
+            try:
+                fval = float(value)
+                year_data[row_name] = None if fval != fval else fval  # fval != fval -> NaN
+            except (TypeError, ValueError):
+                year_data[row_name] = None
+
+        # Si ya existe ese año (p.ej. mismo año en anual y trimestral), no lo pisamos
+        if year_key not in result:
+            result[year_key] = year_data
+        else:
+            result[year_key].update({k: v for k, v in year_data.items() if v is not None})
+
+    return result
+
+
 def get_financials(ticker: str) -> Dict[str, Any]:
-    """Placeholder que devuelve estructura mínima."""
-    return {"ticker": ticker.upper(), "income_statement": {}, "balance_sheet": {}, "cash_flow": {}}
+    """Obtiene income statement, balance sheet y cash flow (anuales) vía yfinance.
+
+    Devuelve SIEMPRE la estructura esperada por el resto del código
+    (income_statement / balance_sheet / cash_flow, cada uno un dict
+    {"2024": {...campo: valor...}, "2023": {...}}), incluso si falla
+    la descarga — en ese caso, vacío en vez de reventar.
+    """
+    cache_key = f"financials_{ticker}"
+    cached = _get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    empty = {"ticker": ticker.upper(), "income_statement": {}, "balance_sheet": {}, "cash_flow": {}}
+
+    try:
+        import yfinance as yf
+
+        t = yf.Ticker(ticker)
+
+        # yfinance expone .financials / .balance_sheet / .cashflow (anual)
+        income_df = t.financials
+        balance_df = t.balance_sheet
+        cashflow_df = t.cashflow
+
+        result = {
+            "ticker": ticker.upper(),
+            "income_statement": _df_to_year_dict(income_df),
+            "balance_sheet": _df_to_year_dict(balance_df),
+            "cash_flow": _df_to_year_dict(cashflow_df),
+        }
+
+        # Si las tres vienen vacías, tratarlo como fallo (no cachear vacío)
+        if not any([result["income_statement"], result["balance_sheet"], result["cash_flow"]]):
+            logger.warning(f"get_financials({ticker}): yfinance devolvió estados financieros vacíos")
+            return empty
+
+        _set_cached(cache_key, result)
+        return result
+
+    except Exception as e:
+        logger.warning(f"get_financials({ticker}) falló: {e}")
+        return empty
 
 
 def get_price_history(ticker: str, period: str = "1y") -> Dict[str, Any]:
     return {"ticker": ticker.upper(), "dates": [], "prices": []}
+
