@@ -130,16 +130,38 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
                 "name": info.get("longName") or info.get("shortName") or ticker,
                 "sector": info.get("sector", "N/A"),
                 "industry": info.get("industry", "N/A"),
+                "description": info.get("longBusinessSummary", ""),
+                "website": info.get("website", ""),
+                "country": info.get("country", ""),
+                "employees": info.get("fullTimeEmployees"),
                 "market_cap": info.get("marketCap"),
+                "enterprise_value": info.get("enterpriseValue"),
                 "pe_ratio": info.get("trailingPE"),
                 "forward_pe": info.get("forwardPE"),
                 "pb_ratio": info.get("priceToBook"),
+                "peg_ratio": info.get("pegRatio") or info.get("trailingPegRatio"),
+                "ev_to_revenue": info.get("enterpriseToRevenue"),
+                "ev_to_ebitda": info.get("enterpriseToEbitda"),
                 "beta": info.get("beta"),
                 "price": info.get("currentPrice") or info.get("regularMarketPrice"),
                 "currency": info.get("currency", "USD"),
                 "dividend_yield": info.get("dividendYield"),
+                "gross_margins": info.get("grossMargins"),
+                "operating_margins": info.get("operatingMargins"),
+                "profit_margins": info.get("profitMargins"),
+                "return_on_equity": info.get("returnOnEquity"),
+                "debt_to_equity": info.get("debtToEquity"),
+                "current_ratio": info.get("currentRatio"),
+                "total_cash": info.get("totalCash"),
+                "total_debt": info.get("totalDebt"),
+                "total_revenue": info.get("totalRevenue"),
                 "free_cash_flow": info.get("freeCashflow"),
+                "operating_cash_flow": info.get("operatingCashflow"),
                 "revenue_growth": info.get("revenueGrowth"),
+                "earnings_growth": info.get("earningsGrowth"),
+                "shares_outstanding": info.get("sharesOutstanding"),
+                "target_mean_price": info.get("targetMeanPrice"),
+                "recommendation": info.get("recommendationKey"),
             }
 
         result = _safe_yfinance_call(fetch, ticker)
@@ -235,4 +257,3 @@ def get_financials(ticker: str) -> Dict[str, Any]:
 
 def get_price_history(ticker: str, period: str = "1y") -> Dict[str, Any]:
     return {"ticker": ticker.upper(), "dates": [], "prices": []}
-
