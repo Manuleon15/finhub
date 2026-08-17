@@ -104,3 +104,23 @@ class Transaction(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+
+class MonthlySnapshot(Base):
+    """Snapshot mensual del portfolio para el gráfico TWR vs S&P 500."""
+
+    __tablename__ = "monthly_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, index=True)
+    month: Mapped[int] = mapped_column(Integer, index=True)  # 1-12
+    portfolio_value: Mapped[float] = mapped_column(Float, default=0.0)
+    portfolio_twr_month: Mapped[float] = mapped_column(Float, default=0.0)
+    sp500_twr_month: Mapped[float] = mapped_column(Float, default=0.0)
+    invested_in_period: Mapped[float] = mapped_column(Float, default=0.0)
+    portfolio_twr_ytd: Mapped[float] = mapped_column(Float, default=0.0)
+    sp500_twr_ytd: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String, default="USD")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
