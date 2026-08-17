@@ -66,4 +66,3 @@ def refresh_all_prices(db: Session) -> Dict[str, Any]:
     return {"updated": updated, "failed": failed, "total": len(positions)}
 
 
-@router_noop = None  # placeholder para no romper imports
