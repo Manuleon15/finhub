@@ -160,3 +160,22 @@ def refresh_prices(db: Session = Depends(get_db)):
     result = refresh_all_prices(db)
     return {"status": "ok", **result}
 
+
+# ======================= SUMMARY (compat con frontend) =======================
+
+@router.get("/summary")
+def summary(db: Session = Depends(get_db)):
+    """Summary para el frontend actual (compatibilidad)."""
+    k = portfolio_kpis(db)
+    positions = db.query(Position).all()
+    total_realized = sum(t.realized_pl or 0 for t in db.query(Transaction).all())
+    return {
+        "num_positions": k["num_positions"],
+        "total_value": k["total_value"],
+        "total_cost": k["total_cost"],
+        "total_unrealized_pl": k["total_unrealized_pl"],
+        "total_unrealized_pl_pct": k["total_unrealized_pl_pct"],
+        "total_realized_pl": round(total_realized, 2),
+    }
+
+
