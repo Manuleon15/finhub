@@ -150,3 +150,13 @@ def portfolio_overview(db: Session = Depends(get_db)) -> Dict[str, Any]:
         "performance": twr_series(db),
         "irpf": irpf_preview(db),
     }
+
+
+from app.modules.portfolio.live_prices import refresh_all_prices
+
+@router.post("/refresh-prices")
+def refresh_prices(db: Session = Depends(get_db)):
+    """Actualiza los precios de todas las posiciones ahora mismo."""
+    result = refresh_all_prices(db)
+    return {"status": "ok", **result}
+
