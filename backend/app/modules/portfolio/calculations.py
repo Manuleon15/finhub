@@ -76,11 +76,15 @@ def portfolio_kpis(db: Session) -> Dict[str, Any]:
     )
 
     # PER ponderado de la cartera
+    # (getattr con default: si tu modelo Position no tiene "per" con ese
+    # nombre exacto —p.ej. lo renombraste a "pe_ratio"— esto no revienta,
+    # simplemente no cuenta esa posición en el ponderado)
     per_weighted = 0.0
     per_weight = 0.0
     for p in positions:
-        if p.per is not None and p.per > 0:
-            per_weighted += p.per * (p.market_value or 0)
+        p_per = getattr(p, "per", None)
+        if p_per is not None and p_per > 0:
+            per_weighted += p_per * (p.market_value or 0)
             per_weight += (p.market_value or 0)
     portfolio_per = per_weighted / per_weight if per_weight else None
 
