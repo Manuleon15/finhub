@@ -14,13 +14,16 @@ logger = logging.getLogger("finhub.yahoo")
 
 # Cache simple en memoria: {key: (timestamp, value)}
 _cache: Dict[str, tuple[float, Any]] = {}
-CACHE_TTL = 900  # 15 minutos
+CACHE_TTL = 900  # 15 minutos — precio, ratios, etc. (cambian a diario)
+FINANCIALS_CACHE_TTL = 6 * 3600  # 6 horas — estados financieros (no cambian intradía;
+# refrescarlos cada 15 min solo gasta peticiones contra Yahoo sin necesidad,
+# y es justo lo que provoca el 429 Too Many Requests al probar varios tickers seguidos)
 
 
-def _get_cached(key: str) -> Optional[Any]:
+def _get_cached(key: str, ttl: int = CACHE_TTL) -> Optional[Any]:
     if key in _cache:
         ts, val = _cache[key]
-        if time.time() - ts < CACHE_TTL:
+        if time.time() - ts < ttl:
             return val
         else:
             del _cache[key]
@@ -187,16 +190,27 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
     if yq_result and "error" in yq_result:
         yq_result = None
 
-    # 2) yfinance (más completo en general, pero a veces falla o da rate limit)
+    # 2) yfinance — SOLO si yahooquery falló del todo, o si le faltan campos
+    #    importantes que solo trae yfinance. Antes se llamaba siempre a
+    #    ambos proveedores por cada análisis, lo que duplicaba las
+    #    peticiones a Yahoo y hacía mucho más fácil toparse con el rate
+    #    limit (429 Too Many Requests) al probar varios tickers seguidos.
+    FIELDS_ONLY_IN_YFINANCE = ["peg_ratio", "ev_to_revenue", "ev_to_ebitda", "eps", "book_value_per_share"]
+    needs_yfinance_gapfill = (
+        not yq_result
+        or any(yq_result.get(f) is None for f in FIELDS_ONLY_IN_YFINANCE)
+    )
+
     yf_result: Optional[Dict[str, Any]] = None
     yf_error: Optional[Dict[str, Any]] = None
-    try:
-        yf_result = _safe_yfinance_call(lambda: _fetch_yfinance_info(ticker), ticker)
-        if "error" in yf_result:
-            yf_error = yf_result
-            yf_result = None
-    except ImportError:
-        yf_error = {"ticker": ticker.upper(), "error": "yfinance no disponible"}
+    if needs_yfinance_gapfill:
+        try:
+            yf_result = _safe_yfinance_call(lambda: _fetch_yfinance_info(ticker), ticker)
+            if "error" in yf_result:
+                yf_error = yf_result
+                yf_result = None
+        except ImportError:
+            yf_error = {"ticker": ticker.upper(), "error": "yfinance no disponible"}
 
     if not yq_result and not yf_result:
         # Ninguna de las dos fuentes ha funcionado
@@ -215,6 +229,16 @@ def get_ticker_info(ticker: str) -> Dict[str, Any]:
 
     _set_cached(cache_key, result)
     return result
+
+
+# Nombres de campo a comprobar en el diagnóstico de get_financials (no se
+# importa de analyzer.py para evitar un import circular entre ambos módulos).
+FIELD_CANDIDATES_CASHFLOW_CHECK = [
+    "Operating Cash Flow",
+    "OperatingCashFlow",
+    "Total Cash From Operating Activities",
+    "Cash Flow From Continuing Operating Activities",
+]
 
 
 def _df_to_year_dict(df) -> Dict[str, Dict[str, Any]]:
@@ -264,7 +288,7 @@ def get_financials(ticker: str) -> Dict[str, Any]:
     la descarga — en ese caso, vacío en vez de reventar.
     """
     cache_key = f"financials_{ticker}"
-    cached = _get_cached(cache_key)
+    cached = _get_cached(cache_key, ttl=FINANCIALS_CACHE_TTL)
     if cached is not None:
         return cached
 
@@ -291,6 +315,25 @@ def get_financials(ticker: str) -> Dict[str, Any]:
         if not any([result["income_statement"], result["balance_sheet"], result["cash_flow"]]):
             logger.warning(f"get_financials({ticker}): yfinance devolvió estados financieros vacíos")
             return empty
+
+        # Diagnóstico: qué años llegaron y si los campos clave que usa el
+        # resto del código (OCF, Capex...) realmente están presentes con
+        # ese nombre exacto. Esto es lo que hay que mirar en la terminal
+        # si el DCF o las métricas de calidad salen raras.
+        cf_years = sorted(result["cash_flow"].keys(), reverse=True)
+        if cf_years:
+            sample_year = cf_years[0]
+            sample_fields = result["cash_flow"][sample_year]
+            has_ocf = any(
+                sample_fields.get(c) is not None for c in FIELD_CANDIDATES_CASHFLOW_CHECK
+            )
+            logger.info(
+                f"get_financials({ticker}): cash_flow años={cf_years} "
+                f"| campos año {sample_year}: {list(sample_fields.keys())[:8]}... "
+                f"| ¿tiene OCF reconocible?: {has_ocf}"
+            )
+        else:
+            logger.warning(f"get_financials({ticker}): cash_flow vacío (income/balance sí llegaron)")
 
         _set_cached(cache_key, result)
         return result
