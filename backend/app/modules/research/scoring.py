@@ -285,12 +285,31 @@ def build_score_from_analyzer_and_models(
         )
 
     # El frontend pinta "Valoración" con el mismo formato que "Calidad"
-    # (score/max/breakdown), pero antes no se construía este objeto —
-    # solo existía como número suelto dentro de composite.
+    # (label/points/max por fila), pero antes solo se guardaba el veredicto
+    # como texto plano ("BUY"/"HOLD"...) — de ahí que saliera vacío.
+    MODEL_LABELS = {
+        "dcf": "DCF",
+        "graham": "Graham Number",
+        "magic_formula": "Magic Formula",
+        "piotroski": "Piotroski F-Score",
+        "altman_z": "Altman Z-Score",
+        "owner_earnings": "Owner Earnings",
+    }
     valuation_breakdown: Dict[str, Any] = {}
     if valuation_models_result and valuation_models_result.get("models"):
+        weights_used = valuation_models_result.get("weights", {})
         for model_name, r in valuation_models_result["models"].items():
-            valuation_breakdown[model_name] = r.get("verdict", "HOLD")
+            verdict = r.get("verdict", "HOLD")
+            # Puntos de ese modelo, a escala 0-70 según su peso relativo
+            model_weight = weights_used.get(model_name, 0)
+            model_max = round(model_weight * 70, 1)
+            rank = VERDICT_RANK.get(verdict, 3)  # 1 (STRONG_SELL) a 5 (STRONG_BUY)
+            model_points = round(model_max * (rank - 1) / 4, 1)  # 0 a model_max
+            valuation_breakdown[model_name] = {
+                "label": f"{MODEL_LABELS.get(model_name, model_name)} ({verdict})",
+                "points": model_points,
+                "max": model_max,
+            }
 
     valuation_score = {
         "score": composite["valuation_contribution"],
@@ -319,4 +338,3 @@ def build_score_from_analyzer_and_models(
         },
         "models_summary": models_summary,
     }
-
