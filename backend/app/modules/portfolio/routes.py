@@ -18,6 +18,8 @@ from app.modules.portfolio.calculations import (
 )
 from app.modules.portfolio.importer import parse_portfolio_excel
 from app.modules.portfolio.models import Position, Transaction
+from app.modules.portfolio.analytics import portfolio_analytics
+
 
 logger = logging.getLogger("finhub.portfolio.routes")
 
@@ -177,5 +179,12 @@ def summary(db: Session = Depends(get_db)):
         "total_unrealized_pl_pct": k["total_unrealized_pl_pct"],
         "total_realized_pl": round(total_realized, 2),
     }
+
+
+@router.get("/analytics")
+def analytics(db: Session = Depends(get_db)):
+    """Métricas de riesgo premium: Sharpe, Sortino, drawdown, beta, concentración."""
+    return portfolio_analytics(db)
+
 
 
