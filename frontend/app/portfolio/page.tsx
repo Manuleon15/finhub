@@ -12,6 +12,8 @@ export default function PortfolioPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [analytics, setAnalytics] = useState<any | null>(null);
+
 
   async function loadData() {
     setLoading(true);
