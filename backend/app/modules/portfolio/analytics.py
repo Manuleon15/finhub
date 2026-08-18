@@ -159,6 +159,7 @@ def _metrics_from_returns(rets: List[float], rf_daily: float) -> Dict[str, Optio
 
 def _comentario_analista(analytics: Dict[str, Any]) -> Dict[str, str]:
     """Redacta una nota de investigación profesional con los números reales."""
+    analytics = analytics.get("excel_metrics", analytics)
     conc = analytics["concentration"]
     beta = analytics["beta_ponderada"]
     yld = analytics["dividend_yield"]
