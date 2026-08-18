@@ -1,32 +1,33 @@
-"""Importador del Excel de portfolio (formato 'DATOS INVERSIONES' + 'MOVIMIENTOS').
+"""Importador completo del Excel de portfolio (5 hojas).
 
-Diseñado para el Excel personal de seguimiento de inversiones: busca las
-columnas por NOMBRE (no por posición), así que si añades/mueves columnas en
-tu Excel no rompe el importador — solo falla si renombras una columna clave.
+Hojas que lee:
+- DATOS INVERSIONES: posiciones (19 filas)
+- DIVERSIFICACIÓN: sectorización por ticker
+- RESUMEN RETORNOS MENSUALES: retornos mensuales vs SP500 (histórico)
+- DASHBOARD: KPIs agregados (opcional, para referencia)
+- MOVIMIENTOS <año>: transacciones de venta
 
-Uso:
-    from app.modules.portfolio.importer import parse_portfolio_excel
-    result = parse_portfolio_excel(file_bytes)
-    # result["positions"] -> list[dict] listas para upsert en DB
-    # result["transactions"] -> list[dict] (si hay hoja de movimientos)
-    # result["warnings"] -> avisos de filas/columnas que no se pudieron leer
+Todos los campos se leen por nombre de columna, no por posición.
 """
 
 from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 
 import openpyxl
 
 logger = logging.getLogger("finhub.portfolio.importer")
 
-# Nombre de la hoja con las posiciones actuales. Ajusta aquí si renombras la pestaña.
-POSITIONS_SHEET_CANDIDATES = ["DATOS INVERSIONES", "POSICIONES", "PORTFOLIO"]
+POSITIONS_SHEET = ["DATOS INVERSIONES", "POSICIONES", "PORTFOLIO"]
+DIVERSIFICATION_SHEET = ["DIVERSIFICACIÓN", "DIVERSIFICACION", "SECTORES"]
+MONTHLY_SHEET = ["RESUMEN RETORNOS MENSUALES", "RETORNOS", "HISTORICO"]
+DASHBOARD_SHEET = ["DASHBOARD"]
+TRANSACTIONS_PREFIX = "MOVIMIENTOS"
 
-# Mapeo columna Excel -> campo del modelo Position.
-# Se busca por coincidencia flexible (mayúsculas/tildes normalizadas).
+# Mapeo Excel -> modelo Position
 POSITION_COLUMN_MAP = {
     "TICKER": "ticker",
     "NOMBRE DEL ACTIVO": "name",
@@ -39,162 +40,219 @@ POSITION_COLUMN_MAP = {
     "P/G REALIZADAS": "realized_pl",
 }
 
-# Hojas de movimientos: se detectan por prefijo (soporta "MOVIMIENTOS 2025",
-# "MOVIMIENTOS 2026", etc. — cualquier año).
-TRANSACTIONS_SHEET_PREFIX = "MOVIMIENTOS"
+# Meses: Año '25, etc.
+MONTH_PATTERN = re.compile(r"^(Ene|Feb|Mar|Abr|May|Jun|Jul|Ago|Sep|Oct|Nov|Dic)\s*'(\d{2})$")
+MONTH_ORDER = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+               "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12}
 
 
-def _normalize(s: Any) -> str:
-    """Normaliza un nombre de columna para comparar sin acentos/mayúsculas."""
+def _norm(s: Any) -> str:
     if s is None:
         return ""
     s = str(s).strip().upper()
-    replacements = {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N"}
-    for a, b in replacements.items():
+    for a, b in {"Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ñ": "N"}.items():
         s = s.replace(a, b)
     return s
 
 
-def _find_sheet(wb: openpyxl.Workbook, candidates: List[str]) -> str | None:
-    normalized_names = {_normalize(n): n for n in wb.sheetnames}
-    for cand in candidates:
-        norm = _normalize(cand)
-        if norm in normalized_names:
-            return normalized_names[norm]
+def _find_sheet(wb: openpyxl.Workbook, candidates: List[str]) -> Optional[str]:
+    norm_names = {_norm(n): n for n in wb.sheetnames}
+    for c in candidates:
+        if _norm(c) in norm_names:
+            return norm_names[_norm(c)]
     return None
 
 
-def _is_number(v: Any) -> bool:
-    if isinstance(v, (int, float)):
-        return True
-    return False
+def _num(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.replace("%", "").replace(",", ".").strip()
+            if not v:
+                return None
+        f = float(v)
+        return None if math.isnan(f) else f
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_positions_sheet(wb: openpyxl.Workbook, warnings: List[str]) -> List[Dict[str, Any]]:
-    sheet_name = _find_sheet(wb, POSITIONS_SHEET_CANDIDATES)
-    if sheet_name is None:
-        warnings.append(
-            f"No se encontró una hoja de posiciones (probé: {POSITIONS_SHEET_CANDIDATES}). "
-            "No se importó ninguna posición."
-        )
+    sheet = _find_sheet(wb, POSITIONS_SHEET)
+    if not sheet:
+        warnings.append(f"No encontré la hoja de posiciones (probé: {POSITIONS_SHEET})")
         return []
-
-    ws = wb[sheet_name]
+    ws = wb[sheet]
     rows = list(ws.iter_rows(values_only=True))
-    if not rows:
+    if len(rows) < 2:
         return []
 
     header = rows[0]
-    # header_idx: nombre de campo del modelo -> índice de columna
-    header_idx: Dict[str, int] = {}
-    for col_idx, col_name in enumerate(header):
-        norm = _normalize(col_name)
+    idx: Dict[str, int] = {}
+    for i, name in enumerate(header):
+        norm = _norm(name)
         for excel_col, field in POSITION_COLUMN_MAP.items():
-            if _normalize(excel_col) == norm:
-                header_idx[field] = col_idx
-
-    if "ticker" not in header_idx:
-        warnings.append(
-            f"La hoja '{sheet_name}' no tiene columna TICKER. No se importó nada."
-        )
+            if _norm(excel_col) == norm:
+                idx[field] = i
+    if "ticker" not in idx:
+        warnings.append(f"La hoja '{sheet}' no tiene columna TICKER")
         return []
 
-    positions: List[Dict[str, Any]] = []
-    for row_num, row in enumerate(rows[1:], start=2):
-        ticker = row[header_idx["ticker"]] if header_idx["ticker"] < len(row) else None
-        if not ticker or not isinstance(ticker, str):
-            continue  # fila vacía o sin ticker válido
-
+    out = []
+    for row in rows[1:]:
+        ticker = row[idx["ticker"]] if idx["ticker"] < len(row) else None
+        if not ticker or not isinstance(ticker, str) or ticker.startswith("#"):
+            continue
         pos: Dict[str, Any] = {"ticker": ticker.strip().upper()}
-        for field, col_idx in header_idx.items():
-            if field == "ticker" or col_idx >= len(row):
+        for field, col in idx.items():
+            if field == "ticker" or col >= len(row):
                 continue
-            value = row[col_idx]
+            v = row[col]
             if field == "name":
-                # Algunas plantillas tienen fórmulas VLOOKUP rotas (#VALUE!) en esta
-                # columna; si no es texto usable, se deja en None y listo.
-                pos[field] = value if isinstance(value, str) and not value.startswith("#") else None
-            elif _is_number(value):
-                pos[field] = float(value)
+                pos[field] = v if isinstance(v, str) and not v.startswith("#") else None
             else:
-                pos[field] = None
-
+                pos[field] = _num(v)
         if pos.get("quantity") is None:
-            warnings.append(f"Fila {row_num} ({pos['ticker']}): sin CANTIDAD, se importó como 0.")
+            warnings.append(f"{pos['ticker']}: sin CANTIDAD, se pone a 0.")
             pos["quantity"] = 0.0
-
-        positions.append(pos)
-
-    return positions
+        out.append(pos)
+    return out
 
 
-def parse_transactions_sheets(wb: openpyxl.Workbook, warnings: List[str]) -> List[Dict[str, Any]]:
-    """Lee todas las hojas 'MOVIMIENTOS <año>'. Formato esperado (según tu Excel):
-    columna A = P/G realizada, columna B = ticker. Sin fecha ni cantidad explícita
-    en tu plantilla actual, así que se importan como venta con solo P/G.
+def parse_diversification_sheet(wb: openpyxl.Workbook) -> Dict[str, str]:
+    """Lee DIVERSIFICACIÓN → {ticker: sector}"""
+    sheet = _find_sheet(wb, DIVERSIFICATION_SHEET)
+    if not sheet:
+        return {}
+    ws = wb[sheet]
+    out = {}
+    for row in ws.iter_rows(values_only=True):
+        if len(row) < 3:
+            continue
+        ticker = row[1]  # Columna B
+        sector = row[3]  # Columna D (INDUSTRIA ESPAÑOL)
+        if ticker and isinstance(ticker, str) and sector and isinstance(sector, str):
+            out[ticker.strip().upper()] = sector.strip()
+    return out
+
+
+def parse_monthly_sheet(wb: openpyxl.Workbook, warnings: List[str]) -> List[Dict[str, Any]]:
+    """Lee RESUMEN RETORNOS MENSUALES.
+
+    Estructura: filas son conceptos (retorno portfolio, retorno sp500, valor),
+    columnas son meses (Año '25, Ene '26...). Detecta los dos años y genera snapshots.
     """
-    transactions: List[Dict[str, Any]] = []
+    sheet = _find_sheet(wb, MONTHLY_SHEET)
+    if not sheet:
+        warnings.append("No encontré la hoja de retornos mensuales")
+        return []
+    ws = wb[sheet]
+    rows = list(ws.iter_rows(values_only=True))
+    if len(rows) < 2:
+        return []
 
-    for sheet_name in wb.sheetnames:
-        if not _normalize(sheet_name).startswith(TRANSACTIONS_SHEET_PREFIX):
+    header = rows[0]
+    month_cols: List[tuple[int, int, int]] = []  # (col_idx, year, month)
+
+    for col_idx, name in enumerate(header):
+        if not isinstance(name, str):
             continue
+        m = MONTH_PATTERN.match(name.strip())
+        if m:
+            mon_name, yr = m.group(1).lower(), m.group(2)
+            if mon_name in MONTH_ORDER:
+                month_cols.append((col_idx, 2000 + int(yr), MONTH_ORDER[mon_name]))
 
-        ws = wb[sheet_name]
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
+    if not month_cols:
+        warnings.append("La hoja de retornos no tiene meses detectables (formato 'Ene 25').")
+        return []
+
+    # Encontrar filas clave
+    portfolio_value = None
+    portfolio_twr = None
+    sp500_twr = None
+
+    for row in rows:
+        if len(row) < 2:
             continue
+        label = _norm(row[0])
+        if "VALOR PORTFOLIO" in label:
+            portfolio_value = row
+        elif "RETORNO MENSUAL PORTFOLIO" in label or "RETORNO MENSUAL CARTERA" in label:
+            portfolio_twr = row
+        elif "RETORNO MENSUAL SP500" in label or "RETORNO MENSUAL S&P500" in label:
+            sp500_twr = row
 
-        # La primera fila suele ser un título ("Ventas 2025"), no cabecera real.
-        for row_num, row in enumerate(rows, start=1):
+    snapshots = []
+    for col_idx, year, month in month_cols:
+        if portfolio_value is None or col_idx >= len(portfolio_value):
+            continue
+        pv = _num(portfolio_value[col_idx]) if portfolio_value else None
+        port = _num(portfolio_twr[col_idx]) if portfolio_twr else None
+        sp = _num(sp500_twr[col_idx]) if sp500_twr else None
+
+        snapshots.append({
+            "year": year,
+            "month": month,
+            "portfolio_value": pv,
+            "portfolio_twr_month": port or 0.0,
+            "sp500_twr_month": sp or 0.0,
+        })
+
+    return snapshots
+
+
+def parse_transactions(wb: openpyxl.Workbook, warnings: List[str]) -> List[Dict[str, Any]]:
+    out = []
+    for name in wb.sheetnames:
+        if not _norm(name).startswith(TRANSACTIONS_PREFIX):
+            continue
+        ws = wb[name]
+        for row_num, row in enumerate(ws.iter_rows(values_only=True), start=1):
             if len(row) < 2:
                 continue
-            realized_pl_raw, ticker_raw = row[0], row[1]
-
-            if not isinstance(ticker_raw, str) or not ticker_raw.strip():
+            pl, ticker = row[0], row[1]
+            if not isinstance(ticker, str) or not ticker.strip():
                 continue
-            # Filtra la fila de título tipo ('Ventas 2025', None, ...)
-            if not _is_number(realized_pl_raw):
+            if not _is_num(pl):
                 continue
+            out.append({
+                "ticker": ticker.strip().upper(),
+                "tx_type": "sell",
+                "realized_pl": float(pl),
+                "quantity": None,
+                "price": None,
+                "date": None,
+                "notes": f"De hoja '{name}'",
+            })
+    return out
 
-            transactions.append(
-                {
-                    "ticker": ticker_raw.strip().upper(),
-                    "tx_type": "sell",
-                    "realized_pl": float(realized_pl_raw),
-                    "quantity": None,
-                    "price": None,
-                    "date": None,
-                    "notes": f"Importado de hoja '{sheet_name}', fila {row_num}",
-                }
-            )
 
-    return transactions
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float))
 
 
 def parse_portfolio_excel(file_bytes: bytes) -> Dict[str, Any]:
-    """Parsea el Excel completo. Devuelve positions, transactions y warnings."""
     warnings: List[str] = []
-
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     except Exception as e:
-        return {
-            "positions": [],
-            "transactions": [],
-            "warnings": [],
-            "error": f"No se pudo leer el archivo Excel: {e}",
-        }
+        return {"error": f"No se pudo leer el Excel: {e}", "positions": [], "transactions": [], "warnings": []}
 
     positions = parse_positions_sheet(wb, warnings)
-    transactions = parse_transactions_sheets(wb, warnings)
+    sectors = parse_diversification_sheet(wb)
+    snapshots = parse_monthly_sheet(wb, warnings)
+    transactions = parse_transactions(wb, warnings)
 
-    logger.info(
-        f"Excel parseado: {len(positions)} posiciones, {len(transactions)} transacciones, "
-        f"{len(warnings)} avisos."
-    )
+    # Asignar sector a cada posición
+    for pos in positions:
+        pos["sector"] = sectors.get(pos["ticker"])
+
+    logger.info(f"Excel: {len(positions)} pos, {len(transactions)} tx, {len(snapshots)} snapshots, {len(sectors)} sectores, {len(warnings)} avisos")
 
     return {
         "positions": positions,
         "transactions": transactions,
+        "monthly_snapshots": snapshots,
         "warnings": warnings,
     }
