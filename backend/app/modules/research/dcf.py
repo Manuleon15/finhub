@@ -89,13 +89,23 @@ def estimate_fcf_multi_level(
 
     Returns: (fcf_value, source_description)
     """
-    # Nivel 1: Cash flow statement (OCF - Capex)
-    ocf = get_operating_cf(financials, 0)
-    capex = get_capex(financials, 0)
-    if ocf is not None:
-        if capex is not None:
-            return ocf - capex, "operating_cashflow_minus_capex"
-        return ocf, "operating_cashflow_no_capex"
+    # Nivel 1: media de OCF - |Capex| de hasta los 3 últimos años disponibles.
+    # Un solo año puede estar distorsionado por un pico puntual de capex
+    # (p.ej. una empresa invirtiendo fuerte en un año concreto), así que
+    # promediar da una base más estable para proyectar 5 años hacia delante.
+    # OJO: capex en los estados financieros suele venir en NEGATIVO — hay
+    # que usar abs(), si no, en vez de restarlo se está sumando.
+    yearly_fcf = []
+    for year_offset in range(3):
+        ocf = get_operating_cf(financials, year_offset)
+        capex = get_capex(financials, year_offset)
+        if ocf is None:
+            continue
+        yearly_fcf.append(ocf - abs(capex) if capex is not None else ocf)
+
+    if yearly_fcf:
+        avg_fcf = sum(yearly_fcf) / len(yearly_fcf)
+        return avg_fcf, f"cashflow_statement_avg_{len(yearly_fcf)}y"
 
     # Nivel 2: info.free_cash_flow (ya calculado por el proveedor)
     if info.get("free_cash_flow") is not None:
